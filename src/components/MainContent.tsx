@@ -1529,7 +1529,20 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
                   const lastMsg = newMsgs[newMsgs.length - 1];
                   if (!lastMsg || lastMsg.role !== 'assistant') return prev;
                   const toolCalls = lastMsg.toolCalls || [];
-                  if (toolEvent.type === 'start') toolCalls.push({ id: toolEvent.tool_use_id, name: toolEvent.tool_name || 'unknown', input: toolEvent.tool_input, status: 'running' as const, textBefore: toolEvent.textBefore || '' });
+                  if (toolEvent.type === 'start') {
+                    let existing = toolCalls.find((t: any) => t.id === toolEvent.tool_use_id);
+                    if (existing) {
+                      existing.name = toolEvent.tool_name || existing.name;
+                      if (toolEvent.tool_input && Object.keys(toolEvent.tool_input).length > 0) existing.input = toolEvent.tool_input;
+                      if (toolEvent.textBefore) existing.textBefore = toolEvent.textBefore;
+                    } else {
+                      toolCalls.push({ id: toolEvent.tool_use_id, name: toolEvent.tool_name || 'unknown', input: toolEvent.tool_input || {}, status: 'running' as const, textBefore: toolEvent.textBefore || '' });
+                    }
+                  }
+                  else if (toolEvent.type === 'input') {
+                    const tc = toolCalls.find((t: any) => t.id === toolEvent.tool_use_id);
+                    if (tc) tc.input = toolEvent.tool_input || {};
+                  }
                   else if (toolEvent.type === 'done') {
                     let tc = toolCalls.find((t: any) => t.id === toolEvent.tool_use_id);
                     if (!tc) { tc = { id: toolEvent.tool_use_id, name: toolEvent.tool_name || 'unknown', input: {}, status: 'done' as const, result: toolEvent.content }; toolCalls.push(tc); }
@@ -2313,13 +2326,26 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
           const toolCalls = lastMsg.toolCalls || [];
 
           if (toolEvent.type === 'start') {
-            toolCalls.push({
-              id: toolEvent.tool_use_id,
-              name: toolEvent.tool_name || 'unknown',
-              input: toolEvent.tool_input,
-              status: 'running' as const,
-              textBefore: toolEvent.textBefore || '',
-            });
+            // Dedupe by id (we may receive a placeholder tool_use_start before
+            // the input has finished streaming, then a tool_use_input later)
+            let existing = toolCalls.find((t: any) => t.id === toolEvent.tool_use_id);
+            if (existing) {
+              existing.name = toolEvent.tool_name || existing.name;
+              if (toolEvent.tool_input && Object.keys(toolEvent.tool_input).length > 0) existing.input = toolEvent.tool_input;
+              if (toolEvent.textBefore) existing.textBefore = toolEvent.textBefore;
+            } else {
+              toolCalls.push({
+                id: toolEvent.tool_use_id,
+                name: toolEvent.tool_name || 'unknown',
+                input: toolEvent.tool_input || {},
+                status: 'running' as const,
+                textBefore: toolEvent.textBefore || '',
+              });
+            }
+          } else if (toolEvent.type === 'input') {
+            // Update an existing tool's input after the JSON has fully streamed
+            const tc = toolCalls.find((t: any) => t.id === toolEvent.tool_use_id);
+            if (tc) tc.input = toolEvent.tool_input || {};
           } else if (toolEvent.type === 'done') {
             let tc = toolCalls.find((t: any) => t.id === toolEvent.tool_use_id);
             if (!tc) {

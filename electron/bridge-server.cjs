@@ -808,7 +808,29 @@ function initServer(mainWindow) {
                             closeThinkingBlock();
                             closeTextBlock();
                             const { sortedToolCalls } = analyzePendingToolCalls();
-                            for (const [, ptc] of sortedToolCalls) {
+
+                            // Suppress completely-empty tool calls (args == '{}' or '').
+                            // Models occasionally hallucinate a trailing empty tool call after
+                            // a valid one in the same turn; emitting it would trigger
+                            // InputValidationError downstream and surface as "Failed" in the UI.
+                            const emptyKeys = [];
+                            for (const [key, ptc] of sortedToolCalls) {
+                                const trimmed = (ptc.args || '').trim();
+                                const isEmpty = !trimmed || trimmed === '{}';
+                                const recoveredHasFields = ptc.recoveredInput
+                                    && typeof ptc.recoveredInput === 'object'
+                                    && Object.keys(ptc.recoveredInput).length > 0;
+                                if (isEmpty && !recoveredHasFields) {
+                                    emptyKeys.push(key);
+                                    console.warn('[Proxy] Suppressing empty tool call',
+                                        '| tool=', ptc.name || '(unknown)',
+                                        '| id=', ptc.id || '(none)');
+                                }
+                            }
+                            for (const key of emptyKeys) pendingToolCalls.delete(key);
+
+                            for (const [key, ptc] of sortedToolCalls) {
+                                if (emptyKeys.includes(key)) continue;
                                 const blockIndex = nextContentBlockIndex++;
                                 const toolId = ptc.id || ('call_' + blockIndex);
                                 const toolName = ptc.name || '';
@@ -2761,7 +2783,18 @@ You have the following skills available. When a user's request matches a skill's
                 if (se.delta && se.delta.type === 'text_delta') { turn.assistantText += se.delta.text; turn.pendingWorkText += se.delta.text; sendSSE({ type: 'content_block_delta', delta: { type: 'text_delta', text: se.delta.text } }); }
                 else if (se.delta && se.delta.type === 'thinking_delta') { turn.thinkingText += se.delta.thinking; sendSSE({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: se.delta.thinking } }); }
             } else if (se.type === 'content_block_start' && se.content_block && se.content_block.type === 'tool_use') {
-                var tu = se.content_block; turn.toolCalls.set(tu.id, { id: tu.id, name: tu.name, input: {}, status: 'running', textBefore: turn.pendingWorkText.trim() }); turn.toolCallOrder.push(tu.id); turn.pendingWorkText = '';
+                var tu = se.content_block;
+                var capturedTextBefore = turn.pendingWorkText.trim();
+                turn.toolCalls.set(tu.id, { id: tu.id, name: tu.name, input: tu.input || {}, status: 'running', textBefore: capturedTextBefore });
+                turn.toolCallOrder.push(tu.id);
+                turn.pendingWorkText = '';
+                // Emit tool placeholder NOW so the UI can render it in the right position
+                // relative to the streaming text. Input may be empty here; it will be
+                // updated via 'tool_use_input' once the input JSON has finished streaming.
+                if (!HIDDEN_TOOLS.has(tu.name) && !turn.sentToolStarts.has(tu.id)) {
+                    turn.sentToolStarts.add(tu.id);
+                    sendSSE({ type: 'tool_use_start', tool_use_id: tu.id, tool_name: tu.name, tool_input: tu.input || {}, textBefore: capturedTextBefore });
+                }
             }
         }
         else if (evt.type === 'assistant' && evt.message && evt.message.content) {
@@ -2769,9 +2802,21 @@ You have the following skills available. When a user's request matches a skill's
                 if (block.type !== 'tool_use') continue;
                 var tc = turn.toolCalls.get(block.id);
                 if (tc) { tc.input = block.input; } else { tc = { id: block.id, name: block.name, input: block.input, status: 'running', textBefore: turn.pendingWorkText.trim() }; turn.toolCalls.set(block.id, tc); turn.toolCallOrder.push(block.id); turn.pendingWorkText = ''; }
-                if (block.name === 'WebSearch' && !turn.sentToolStarts.has(block.id)) { turn.sentToolStarts.add(block.id); sendSSE({ type: 'status', message: 'Searching: ' + ((block.input && block.input.query) || 'the web') }); }
-                else if (block.name === 'WebFetch' && !turn.sentToolStarts.has(block.id)) { turn.sentToolStarts.add(block.id); sendSSE({ type: 'status', message: 'Fetching: ' + ((block.input && block.input.url) || '') }); }
-                else if (!turn.sentToolStarts.has(block.id) && !HIDDEN_TOOLS.has(block.name)) { turn.sentToolStarts.add(block.id); sendSSE({ type: 'tool_use_start', tool_use_id: block.id, tool_name: block.name, tool_input: block.input, textBefore: (tc && tc.textBefore) || '' }); console.log('[Tool]', block.name, JSON.stringify(block.input || {}).slice(0, 120)); }
+                if (block.name === 'WebSearch') {
+                    if (!turn.sentToolStarts.has(block.id)) { turn.sentToolStarts.add(block.id); sendSSE({ type: 'status', message: 'Searching: ' + ((block.input && block.input.query) || 'the web') }); }
+                } else if (block.name === 'WebFetch') {
+                    if (!turn.sentToolStarts.has(block.id)) { turn.sentToolStarts.add(block.id); sendSSE({ type: 'status', message: 'Fetching: ' + ((block.input && block.input.url) || '') }); }
+                } else if (!HIDDEN_TOOLS.has(block.name)) {
+                    if (!turn.sentToolStarts.has(block.id)) {
+                        // stream_event content_block_start did not fire (some providers); send placeholder + full input together
+                        turn.sentToolStarts.add(block.id);
+                        sendSSE({ type: 'tool_use_start', tool_use_id: block.id, tool_name: block.name, tool_input: block.input, textBefore: (tc && tc.textBefore) || '' });
+                    } else {
+                        // Placeholder already sent at content_block_start; now push the full input
+                        sendSSE({ type: 'tool_use_input', tool_use_id: block.id, tool_input: block.input });
+                    }
+                    console.log('[Tool]', block.name, JSON.stringify(block.input || {}).slice(0, 120));
+                }
             }
         }
         else if (evt.type === 'user' && evt.message && evt.message.content) {
