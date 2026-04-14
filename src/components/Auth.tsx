@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { login, register, sendCode, forgotPassword, resetPassword, gatewayLogin } from '../api';
 
 type View = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 
 const Auth = () => {
+  const navigate = useNavigate();
   const [view, setView] = useState<View>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -176,7 +179,19 @@ const Auth = () => {
   );
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#F8F8F6] font-sans">
+    <div className="min-h-screen flex items-center justify-center bg-[#F8F8F6] font-sans relative">
+      {/* Back button — lets users leave the login page without logging in.
+          Uses navigate(-1) if there's history, otherwise navigates to / */}
+      <button
+        onClick={() => {
+          if (window.history.length > 1) navigate(-1);
+          else navigate('/');
+        }}
+        className="absolute top-6 left-6 flex items-center gap-1.5 px-3 py-1.5 text-sm text-[#747474] hover:text-[#222] hover:bg-black/5 rounded-md transition-colors"
+      >
+        <ArrowLeft size={16} />
+        返回
+      </button>
       <div className="w-full max-w-md p-8 bg-white rounded-2xl shadow-sm border border-[#E5E5E5]">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-serif-claude text-[#222] mb-2">Claude</h1>
