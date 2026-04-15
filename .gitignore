@@ -23,6 +23,9 @@ frontend-error.log
 .env.local
 *.local
 
+# Build-time secrets (populated by CI from GitHub Actions secrets, never committed)
+electron/secrets.json
+
 # Engine dependencies (install separately with: cd engine && bun install)
 engine/node_modules/
 # engine/.env is committed (no secrets, only public config)

@@ -3,6 +3,19 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const { autoUpdater } = require('electron-updater');
+// Load build-time secrets before requiring bridge-server so they're available on process.env.
+// secrets.json is gitignored — populated by CI at build time from GitHub Actions secrets.
+// In dev just export the env vars in your shell (or put them in this file locally).
+try {
+    const secretsPath = path.join(__dirname, 'secrets.json');
+    if (fs.existsSync(secretsPath)) {
+        const s = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
+        for (const [k, v] of Object.entries(s)) {
+            if (!process.env[k]) process.env[k] = String(v);
+        }
+    }
+} catch (_) {}
+
 const { initServer, enableNodeModeForChildProcesses } = require('./bridge-server.cjs');
 
 // Fix Chinese garbled text in Windows console by switching to UTF-8 code page

@@ -830,6 +830,17 @@ const SettingsPage = ({ onClose }: SettingsPageProps) => {
             })}
           </div>
         </section>
+
+        <hr className="border-claude-border" />
+
+        {/* About Section */}
+        <section>
+          <h3 className="text-[16px] font-semibold text-claude-text mb-3">关于</h3>
+          <div className="flex items-center justify-between py-2">
+            <span className="text-[14px] text-claude-textSecondary">当前版本</span>
+            <span className="text-[14px] font-mono text-claude-text">v{__APP_VERSION__}</span>
+          </div>
+        </section>
       </div>
     );
   }

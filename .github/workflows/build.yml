@@ -47,6 +47,21 @@ jobs:
           cp "$BUN_PATH" "engine/bin/bun${{ matrix.bun_ext }}"
           chmod +x "engine/bin/bun${{ matrix.bun_ext }}" 2>/dev/null || true
           ls -lh engine/bin/
+      - name: Write build-time secrets
+        shell: bash
+        env:
+          GH_OAUTH_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+        run: |
+          # Inject GitHub OAuth client secret into electron/secrets.json, read by main.cjs
+          # at launch. If the GitHub Actions secret is missing the file is written empty —
+          # app still runs, only the "import from GitHub" feature shows an explicit error.
+          node -e "
+            const fs = require('fs');
+            const secrets = {};
+            if (process.env.GH_OAUTH_SECRET) secrets.GITHUB_CLIENT_SECRET = process.env.GH_OAUTH_SECRET;
+            fs.writeFileSync('electron/secrets.json', JSON.stringify(secrets, null, 2));
+            console.log('secrets.json written, keys:', Object.keys(secrets));
+          "
       - name: Build frontend
         run: npx vite build
       - name: Build & Publish (Windows)

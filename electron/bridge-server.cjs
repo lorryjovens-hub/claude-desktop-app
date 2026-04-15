@@ -49,7 +49,32 @@ try {
 
 function initServer(mainWindow) {
     const server = express();
-    server.use(cors());
+
+    // ── Origin 白名单 (安全关键) ──────────────────────────────
+    // bridge-server 监听 127.0.0.1:30080 — 默认情况下任何用户访问的恶意网页都能
+    // fetch 到这里, 触发 readFile/copyFile/spawn 等端点造成任意文件读写甚至 RCE.
+    // 这里限制只接受 Electron 自身 (file:// origin = 'null' 或无 Origin header)
+    // 和 dev server (localhost:3000) 的请求; 其他 Origin 直接 403.
+    // Top-level navigation (OAuth redirect 等) 不带 Origin header, 也会放行.
+    const isAllowedOrigin = (origin) => {
+        if (!origin) return true; // no Origin header — top-level nav / non-browser
+        if (origin === 'null') return true; // file:// in Chromium
+        if (origin.startsWith('file://')) return true;
+        if (origin === 'http://localhost:3000' || origin === 'http://127.0.0.1:3000') return true; // vite dev
+        return false;
+    };
+    server.use((req, res, next) => {
+        const origin = req.headers.origin;
+        if (!isAllowedOrigin(origin)) {
+            console.warn('[Security] Blocked cross-origin request from', origin, 'to', req.method, req.url);
+            return res.status(403).json({ error: 'cross-origin request denied' });
+        }
+        next();
+    });
+    server.use(cors({
+        origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+        credentials: false,
+    }));
     server.use(express.json({ limit: '5mb' }));
 
     // Track active engine child processes per conversation (for stdin writes like AskUserQuestion)
@@ -1331,12 +1356,19 @@ function initServer(mainWindow) {
     });
 
     // Get artifact content by file path
+    // 安全: 只允许读 workspaces 目录内的文件 (防止通过绝对路径读 ~/.ssh/id_rsa 等敏感文件).
     server.get('/api/artifacts/content', (req, res) => {
         const fp = req.query.path;
         if (!fp) return res.status(400).json({ error: 'Missing path' });
+        const resolved = path.resolve(fp);
+        const wsRoot = path.resolve(workspacesDir);
+        if (!resolved.startsWith(wsRoot + path.sep) && resolved !== wsRoot) {
+            console.warn('[Security] Blocked artifact read outside workspaces:', fp);
+            return res.status(403).json({ error: 'Access denied' });
+        }
         try {
-            const content = fs.readFileSync(fp, 'utf-8');
-            res.json({ content, format: 'html', title: path.basename(fp) });
+            const content = fs.readFileSync(resolved, 'utf-8');
+            res.json({ content, format: 'html', title: path.basename(resolved) });
         } catch {
             res.status(404).json({ error: 'File not found' });
         }
@@ -2225,10 +2257,21 @@ function initServer(mainWindow) {
     server.post('/api/workspace-config', (req, res) => {
         const { dir } = req.body;
         if (!dir) return res.status(400).json({ error: 'Missing dir' });
+        // 安全: dir 决定 engine spawn 的 cwd, 攻击者能改就能让 engine 在系统目录执行命令.
+        // 只允许指向 user 家目录下的子目录, 且必须已存在 (避免 mkdir 到随机位置).
         try {
+            const resolved = path.resolve(dir);
+            const homeRoot = path.resolve(os.homedir());
+            if (!resolved.startsWith(homeRoot + path.sep)) {
+                console.warn('[Security] Blocked workspace-config outside home:', dir);
+                return res.status(403).json({ error: 'workspace dir must be inside user home' });
+            }
+            if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+                return res.status(400).json({ error: 'dir does not exist or is not a directory' });
+            }
             const settingsPath = path.join(userDataPath, 'workspace-config.json');
-            fs.writeFileSync(settingsPath, JSON.stringify({ workspacesDir: dir }));
-            res.json({ ok: true, dir });
+            fs.writeFileSync(settingsPath, JSON.stringify({ workspacesDir: resolved }));
+            res.json({ ok: true, dir: resolved });
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
@@ -2585,10 +2628,13 @@ You have the following skills available. When a user's request matches a skill's
     //  GITHUB CONNECTOR 鈥?OAuth + API
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
-    // GitHub OAuth App credentials (register at https://github.com/settings/developers)
-    // Callback URL must be: http://127.0.0.1:30080/api/github/callback
-    const GITHUB_CLIENT_ID = 'Ov23liWiTL6v74GsI2U7';
-    const GITHUB_CLIENT_SECRET = 'c3ee401a631d77a4ceebe33e68765d02ddccc36c';
+    // GitHub OAuth App credentials. CLIENT_ID is public (embedded in authorize URL),
+    // CLIENT_SECRET must NOT be hardcoded — read from env at launch. In production
+    // the CI build injects it (see build.yml); in dev set GITHUB_CLIENT_SECRET in shell.
+    // Callback URL registered at https://github.com/settings/developers must be:
+    //   http://127.0.0.1:30080/api/github/callback
+    const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || 'Ov23liWiTL6v74GsI2U7';
+    const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
     const GITHUB_REDIRECT_URI = 'http://127.0.0.1:30080/api/github/callback';
 
     // Persistent storage for GitHub token
@@ -2628,6 +2674,9 @@ You have the following skills available. When a user's request matches a skill's
     server.get('/api/github/callback', async (req, res) => {
         const { code } = req.query;
         if (!code) return res.status(400).send('Missing code');
+        if (!GITHUB_CLIENT_SECRET) {
+            return res.status(503).send('GitHub OAuth not configured: GITHUB_CLIENT_SECRET env var missing. This build cannot complete GitHub login.');
+        }
         try {
             // Use https module for better compatibility (avoids fetch issues in some Electron/Node environments)
             const tokenData = await new Promise((resolve, reject) => {
